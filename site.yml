@@ -1,0 +1,73 @@
+---
+- name: Procedure_Vector
+  gather_facts: false
+  hosts: vector
+  tasks:
+    - name: mkdir_for_vector
+      file:
+        path: "{{ vector_home }}"
+        state: directory
+      tags: vector_dir
+    - name: get_vector_distrib
+      get_url:
+        url: "https://packages.timber.io/vector/{{ vector_version }}/vector-{{ vector_version }}-x86_64-unknown-linux-gnu.tar.gz"
+        dest: "./vector-{{ vector_version }}-x86_64-unknown-linux-gnu.tar.gz"
+      delegate_to: localhost
+    - name: unpack
+      unarchive:
+        src: "vector-{{ vector_version }}-x86_64-unknown-linux-gnu.tar.gz"
+        dest: "{{ vector_home }}"
+        extra_opts: [--strip-components=1]
+        remote_src: yes
+        creates: "{{ vector_home }}/bin/vector"
+      tags: vector_unpack
+    - name: template_config
+      template:
+        src: "template/vector.cfg.j2"
+        dest: "{{ vector_home }}"
+        backup: True
+      register: template_result
+      tags: vector_template
+
+- name: Install Clickhouse
+  hosts: clickhouse
+  gather_facts: false
+  handlers:
+    - name: Start clickhouse service
+      become: true
+      ansible.builtin.service:
+        name: clickhouse-server
+        state: restarted
+  tasks:
+    - name: Install Sudo
+      yum:
+        name: sudo
+        state: present
+    - name: Get clickhouse packages distrib
+      ansible.builtin.get_url:
+        url: "https://packages.clickhouse.com/rpm/stable/{{ item }}-{{ clickhouse_version }}.noarch.rpm"
+        dest: "./clickhouse-common-static-{{ clickhouse_version }}.noarch.rpm"
+        mode: 0755
+      with_items: "{{ clickhouse_packages }}"
+    - name: Get clickhouse cs distrib
+      ansible.builtin.get_url:
+        url: "https://packages.clickhouse.com/rpm/stable/clickhouse-common-static-{{ clickhouse_version }}.x86_64.rpm"
+        dest: "./clickhouse-common-static-{{ clickhouse_version }}.x86_64.rpm"
+        mode: 0755
+    - name: Install clickhouse packages
+      become: True
+      ansible.builtin.yum:
+        use_backend: yum
+        name:
+          - clickhouse-common-static-{{ clickhouse_version }}.x86_64.rpm
+          - clickhouse-client-{{ clickhouse_version }}.noarch.rpm
+          - clickhouse-server-{{ clickhouse_version }}.noarch.rpm
+        state: present
+      notify: Start clickhouse service
+    - name: force execution handlers (Start clickhouse service)
+      ansible.builtin.meta: flush_handlers
+    - name: Create database
+      ansible.builtin.command: "clickhouse-client -q 'create database logs;'"
+      register: create_db
+      failed_when: create_db.rc != 0 and create_db.rc !=82
+      changed_when: create_db.rc == 0
